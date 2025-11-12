@@ -1,0 +1,5 @@
+keys=(
+    "net.bridge.bridge-nf-call-ip6tables"
+    "net.bridge.bridge-nf-call-iptables"
+    "net.ipv4.ip_forward"
+)
