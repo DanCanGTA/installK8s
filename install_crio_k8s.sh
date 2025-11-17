@@ -1,7 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-CRIO_VERSION="1.23.5"  
+# Always install the latest patch version of a given CRI-O major.minor version on CentOS 8.
+CRIO_VERSION="1.27"  
+
+# Always install the latest patch version of a given K8s major.minor version.
+# Only if you want to install <=1.23 specific patch, use e.g. 1.23.17
+K8S_VERSION="1.27"
+
+# Pod network add-on version (Calico)
+CALICO_VERSION="3.28.5"
 
 # --------- Helpers ---------
 log() { echo "[INFO] $*"; }
@@ -64,3 +72,5 @@ dnf install -y cri-o || {
 # Enable and start CRI-O
 # sudo systemctl enable crio
 # sudo systemctl start crio
+
+wget -q -O ~/calico.yaml https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml
