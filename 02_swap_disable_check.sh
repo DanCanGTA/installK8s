@@ -9,7 +9,7 @@ else
 fi
 
 # permanent (non-commented fstab entries with 3rd field == "swap")
-if awk '!/^#/ && $3=="swap" {exit 0} END{exit 1}' /etc/fstab >/dev/null 2>&1; then
+if [ -n "$(awk '$1 !~ /^#/ && $3 == "swap"' /etc/fstab)" ]; then
     SWAP_PERM=on
 else
     SWAP_PERM=off
