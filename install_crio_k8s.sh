@@ -2,10 +2,17 @@
 set -euo pipefail
 
 # Always install the latest patch of a given CRI-O major.minor on CentOS 8.
-CRIO_VERSION="1.23"
+CRIO_VERSION="1.27"
 
-# Always install the latest patch version of a given K8s major.minor version.
-K8S_VERSION="1.23"
+# To check K8s patches:
+# https://kubernetes.io/releases/patch-releases/#:~:text=These%20releases%20are%20no%20longer%20supported.%20Minor,Patch%20Release%2C%20End%20Of%20Life%20Date%2C%20Note.
+# https://github.com/kubernetes/kubernetes/releases?page=20
+# For <1.24, we need to specify the exact patch version to download binaries, like 1.23.17
+# Otherwise, always install the latest patch version of a given K8s major.minor version.
+K8S_VERSION="1.27"
+# Make sure to set the correct API versions for kubeadm and kube-proxy config, acording to K8S_VERSION
+KUBEADM_API_VERSION="v1beta3"
+KUBEPROXY_API_VERSION="v1alpha1"
 
 # Pod network add-on version (Calico)
 CALICO_VERSION="3.28.5"
@@ -27,6 +34,17 @@ normalize_version() {
 
 CRIO_MAJOR_MINOR_PATCH=$(normalize_version "$CRIO_VERSION")
 CRIO_MAJOR_MINOR=$(echo "$CRIO_MAJOR_MINOR_PATCH" | awk -F. '{print $1"."$2}')
+
+# --------- Enforce CRI-O and K8s major.minor compatibility ---------
+K8S_MAJOR_MINOR=$(echo "$K8S_VERSION" | awk -F. '{print $1"."$2}')
+
+if [[ "$CRIO_MAJOR_MINOR" != "$K8S_MAJOR_MINOR" ]]; then
+    fatal "CRI-O version ${CRIO_MAJOR_MINOR} is NOT compatible with Kubernetes ${K8S_MAJOR_MINOR}.
+Both CRI-O and Kubernetes must use the same major.minor version.
+Example: CRI-O 1.23.x must match Kubernetes 1.23.x."
+fi
+
+log "Version check passed: CRI-O $CRIO_MAJOR_MINOR ↔ K8s $K8S_MAJOR_MINOR"
 
 # Repo selection
 if [[ $(echo "$CRIO_MAJOR_MINOR < 1.29" | bc) -eq 1 ]]; then
@@ -53,8 +71,49 @@ dnf makecache -q
 log "Installing CRI-O..."
 dnf install -y cri-o || fatal "Failed to install CRI-O."
 
+# --------- Configure CRI-O for kubelet (if needed) ---------
+# Ensure CRI-O uses the correct cgroup manager (systemd) for kubelet compatibility
+CRIO_CONF_DIR="/etc/crio"
+# Find the main crio.conf file (there may be multiple, pick the one with the shortest path)
+CRIO_CONF=$(
+    find "$CRIO_CONF_DIR" -type f -name "*crio.conf" \
+    | awk -F/ '{ print NF, $0 }' \
+    | sort -n -k1,1 -k2,2 \
+    | head -n 1 \
+    | cut -d' ' -f2-
+)
+if [[ -f "${CRIO_CONF}" ]]; then
+    log "Ensuring CRI-O uses systemd cgroup manager in ${CRIO_CONF}..."
+
+    # Check if the correct setting already exists
+    if grep -qE '^cgroup_manager *= *"systemd"' "${CRIO_CONF}"; then
+        log "cgroup_manager already set to systemd; skipping update."
+    else
+        log "Backupting original CRI-O config to ${CRIO_CONF}.bak.systemd_cgroup"
+        cp -p "${CRIO_CONF}" "${CRIO_CONF}.bak.systemd_cgroup"
+        # Key exists but with wrong value → replace it
+        if grep -q '^cgroup_manager' "${CRIO_CONF}"; then
+            sed -ri 's/^cgroup_manager *= *.*/cgroup_manager = "systemd"/' "${CRIO_CONF}"
+        else
+            # If section exists, insert key under it
+            if grep -q '^\[crio.runtime\]' "${CRIO_CONF}"; then
+                sed -i '/^\[crio.runtime\]/a cgroup_manager = "systemd"' "${CRIO_CONF}"
+            else
+                # No section → append both section and key
+                {
+                    echo "[crio.runtime]"
+                    echo 'cgroup_manager = "systemd"'
+                } >> "${CRIO_CONF}"
+            fi
+        fi
+    fi
+fi
+
+
 log "Enabling and starting CRI-O service..."
-systemctl enable crio
+systemctl enable crio 2> >(while read -r l; do
+    [[ "$l" =~ Created\ symlink ]] && echo "$l" || echo "$l" >&2
+done)
 systemctl start crio
 
 # --------- Check actual installed version ---------
@@ -88,9 +147,29 @@ if [[ "$K8S_MAJOR_MINOR" < "1.24" ]]; then
     for bin in kubeadm kubelet kubectl; do
         URL="https://dl.k8s.io/release/v${K8S_VERSION}/bin/linux/amd64/${bin}"
         log "Downloading ${bin} from ${URL}..."
-        curl -L --fail -o "${BIN_DIR}/${bin}" "$URL" || fatal "Failed to download $bin"
+        curl -L --fail --silent --show-error -o "${BIN_DIR}/${bin}" "$URL" || fatal "Failed to download $bin"
         chmod +x "${BIN_DIR}/${bin}"
     done
+
+    # Create systemd service for kubelet. This is needed for manually downloaded kubelet.
+    log "Creating systemd service for kubelet..."
+    cat >/etc/systemd/system/kubelet.service <<'EOF'
+[Unit]
+Description=kubelet: The Kubernetes Node Agent
+Documentation=https://kubernetes.io/docs/
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/kubelet
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
     ## commenting out crictl download as it is not necessary for CRI-O. 
     ## under installatio method is complicated, avoid doing it if this is not necessary.
     # log "Downloading crictl for K8s v${K8S_VERSION}..."
@@ -131,7 +210,35 @@ EOF
 fi
 
 # -------- Enable kubelet --------
-systemctl enable --now kubelet
+systemctl enable --now kubelet 2> >(while read -r l; do
+    [[ "$l" =~ Created\ symlink ]] && echo "$l" || echo "$l" >&2
+done)
+
+# --------- kubeadm config and init ---------
+K8S_VERSION_WITH_PATCH=$(kubeadm version -o short)
+KUBEADM_CONFIG="/root/kubeadm-config.yaml"
+POD_NETWORK_CIDR="192.168.0.0/16"   # Default for Calico; change if needed
+
+log "Writing kubeadm configuration to ${KUBEADM_CONFIG} (Kubernetes ${K8S_VERSION_WITH_PATCH})"
+cat > "${KUBEADM_CONFIG}" <<EOF
+apiVersion: kubeadm.k8s.io/${KUBEADM_API_VERSION}
+kind: ClusterConfiguration
+kubernetesVersion: ${K8S_VERSION_WITH_PATCH}
+controlPlaneEndpoint: ""    # optional: replace with VIP or FQDN if HA
+networking:
+  podSubnet: "${POD_NETWORK_CIDR}"
+---
+apiVersion: kubeproxy.config.k8s.io/${KUBEPROXY_API_VERSION}
+kind: KubeProxyConfiguration
+mode: "iptables"
+EOF
+
+log "Running kubeadm init (this may take a few minutes)..."
+# kubeadm may error if required ports blocked or preflight fails. We let it run and fail explicitly.
+kubeadm init --config="${KUBEADM_CONFIG}" --upload-certs || {
+  err "kubeadm init failed. Inspect the output above. Exiting."
+  exit 1
+}
 
 
 log "Downloading Calico v${CALICO_VERSION} manifest..."
