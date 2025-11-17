@@ -25,7 +25,7 @@ if output="$("$DIR/02_swap_disable_check.sh" || true)"; then
         swapoff -a
     fi
     if $SWAP_PERM_ON; then
-        sed -i.bak -r '/^[[:space:]]*#/!{s/^([^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+swap\b.*)$/#\1/}' /etc/fstab
+        sed -i.bak '/\bswap\b/s/^/#/g' /etc/fstab 
     fi
 
     # verify
