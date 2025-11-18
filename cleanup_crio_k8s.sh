@@ -9,6 +9,8 @@ rm -f /usr/local/bin/kubectl
 rm -f /usr/local/bin/kubelet
 rm -f /etc/systemd/system/kubelet.service
 rm -f /etc/systemd/system/multi-user.target.wants/kubelet.service
+rm -rf /etc/kubernetes/
+rm -rf /var/lib/etcd
 
 ########### clean up CRI-O #################
 systemctl stop crio

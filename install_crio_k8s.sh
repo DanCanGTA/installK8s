@@ -15,6 +15,7 @@ KUBEADM_API_VERSION="v1beta3"
 KUBEPROXY_API_VERSION="v1alpha1"
 
 # Pod network add-on version (Calico)
+# To check the available versions, visit: https://github.com/projectcalico/calico/releases?page=1
 CALICO_VERSION="3.28.5"
 
 # --------- Helpers ---------
@@ -239,6 +240,8 @@ kubeadm init --config="${KUBEADM_CONFIG}" --upload-certs || {
   err "kubeadm init failed. Inspect the output above. Exiting."
   exit 1
 }
+
+#kubeadm reset -f   # clean any partial state
 
 
 log "Downloading Calico v${CALICO_VERSION} manifest..."

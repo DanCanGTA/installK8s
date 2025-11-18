@@ -47,13 +47,19 @@ fi
 while IFS= read -r line; do
     case "$line" in
         MISSING\|*)
-            pkg="${line#MISSING|}"
-            echo "Installing missing package: $pkg"
-            dnf install -y "$pkg"
+            IFS='|' read -r _ pkg extra_opt <<< "$line"
+
+            if [ -n "$extra_opt" ]; then
+                echo "Installing missing package: $pkg  (option: $extra_opt)"
+                dnf install -y "$extra_opt" "$pkg"
+            else
+                echo "Installing missing package: $pkg"
+                dnf install -y "$pkg"
+            fi
             ;;
         UNMATCHED\|*)
-            # split on '|' and read fields: UNMATCHED|pkg|installed|expected
-            IFS='|' read -r _ pkg installed expected _ <<< "$line"
+            # split on '|' and read fields: UNMATCHED|pkg|installed|expected|extra_option
+            IFS='|' read -r _ pkg installed expected extra_opt <<< "$line"
 
             if [ -z "$expected" ] || [ -z "$installed" ]; then
                 echo "Warning: could not parse versions from line: $line"
@@ -64,7 +70,15 @@ while IFS= read -r line; do
             if [ "$cmp_result" -eq 1 ]; then
                 echo "Expected version ($expected) is newer than installed ($installed) for $pkg — installing expected version"
                 # try installing package-version, fall back to plain package install if needed
-                dnf install -y "${pkg}-${expected}" || dnf install -y "$pkg-$expected" || dnf install -y "$pkg"
+                if [ -n "$extra_opt" ]; then
+                    dnf install -y "$extra_opt" "${pkg}-${expected}" \
+                        || dnf install -y "$extra_opt" "$pkg-$expected" \
+                        || dnf install -y "$extra_opt" "$pkg"
+                else
+                    dnf install -y "${pkg}-${expected}" \
+                        || dnf install -y "$pkg-$expected" \
+                        || dnf install -y "$pkg"
+                fi
             elif [ "$cmp_result" -eq -1 ]; then
                 echo "Warning: installed version ($installed) is newer than expected ($expected) for $pkg"
             else
