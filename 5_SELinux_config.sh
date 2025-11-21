@@ -57,5 +57,5 @@ if $CHANGE_PERM && [ -f /etc/selinux/config ]; then
     sed -i.bak -r "s/^SELINUX=.*/SELINUX=$TARGET_MODE/" /etc/selinux/config || true
 fi
 
-log "Checking SELinux status after changes..."
+echo "Checking SELinux status after changes..."
 $DIR/05_SELinux_check.sh
