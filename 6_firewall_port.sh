@@ -31,7 +31,7 @@ fi
 
 # Open missing ports
 for port in $NOT_OPENED_PORTS; do
-    log "Opening firewall port $port in zone '$ZONE'..."4
+    log "Opening firewall port $port in zone '$ZONE'..."
     firewall-cmd --zone="$ZONE" --add-port="$port" --permanent
     firewall-cmd --zone="$ZONE" --add-port="$port"
 done

@@ -241,8 +241,37 @@ kubeadm init --config="${KUBEADM_CONFIG}" --upload-certs || {
   exit 1
 }
 
-#kubeadm reset -f   # clean any partial state
+#kubeadm reset -f   # for testing purpose, clean any partial state
 
 
 log "Downloading Calico v${CALICO_VERSION} manifest..."
  wget -q -O ~/calico.yaml https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml
+
+# --------- Create k8s admin user & group ---------
+log "Ensuring k8smaster group and k8sadm user exist..."
+
+GROUP_NAME="k8smaster"
+K8S_ADM_USER="k8sadm"
+
+# Create group if missing
+if ! getent group "$GROUP_NAME" >/dev/null; then
+    groupadd "$GROUP_NAME"
+fi
+
+# Create user if missing
+if ! id "$K8S_ADM_USER" >/dev/null 2>&1; then
+    useradd -m -g "$GROUP_NAME" "$K8S_ADM_USER"
+fi
+
+log "User '$K8S_ADM_USER' and group '$GROUP_NAME' are ready."
+
+log "Setting up kubeconfig and Calico manifest for user '$K8S_ADM_USER'..."
+eval install -d -o "$K8S_ADM_USER" -g "$GROUP_NAME" -m 755 "~$K8S_ADM_USER/.kube"
+eval install -o "$K8S_ADM_USER" -g "$GROUP_NAME" /etc/kubernetes/admin.conf "~$K8S_ADM_USER/.kube/config"
+eval install -o "$K8S_ADM_USER" -g "$GROUP_NAME" ~/calico.yaml "~$K8S_ADM_USER/calico.yaml"
+
+log "Applying Calico network add-on..."
+sudo -u $K8S_ADM_USER bash -c "
+     kubectl apply -f ~/calico.yaml
+"
+# kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f ~/calico.yaml
